@@ -1,0 +1,60 @@
+name: Цени от КЗП
+
+on:
+  schedule:
+    # КЗП публикува архива по различно време през деня — два опита.
+    - cron: "15 10 * * *"
+    - cron: "15 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prices
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Кеш на архивите от КЗП
+        uses: actions/cache@v4
+        with:
+          path: .cache/zips
+          key: kzp-v1-${{ github.run_id }}
+          restore-keys: kzp-v1-
+
+      - name: Предишни данни (клон data)
+        run: |
+          if git fetch --depth=1 origin data; then
+            git worktree add --detach prev FETCH_HEAD
+          else
+            echo "Още няма клон data — първо пускане, ще изтегля до 90 дни назад."
+          fi
+
+      - name: Тестове
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: Сваляне и обработка
+        run: python -m pipeline.build --zips .cache/zips --prev prev --out site
+
+      - name: Публикуване в клона data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DAY=$(python -c "import json;print(json.load(open('site/v1/meta.json'))['date'])")
+          cd site
+          git init -q -b data
+          git add -A
+          git -c user.name="smartbasket-bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qm "Цени за ${DAY}"
+          git push -qf "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data
+          echo "Публикувано: ${DAY}"
